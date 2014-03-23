@@ -1,32 +1,32 @@
 /*	
 	A simple LD_PRELOAD hack to let you specify the source address
 	for all outbound connections or if you want to limit a process
-        to only listening on one IP
+	to only listening on one IP
 
 	Copyright (C) 2005 Robert J. McKay <robert@mckay.com>
 
-	License: You can do whatever you want with it.
+License: You can do whatever you want with it.
 
 
-	Compile:
+Compile:
 
-	gcc -fPIC -static -shared -o bindhack.so bindhack.c -lc -ldl
+gcc -fPIC -static -shared -o bindhack.so bindhack.c -lc -ldl
 
-	You can add -DDEBUG to see debug output.
+You can add -DDEBUG to see debug output.
 
-	Usage:
+Usage:
 
-	LD_PRELOAD=/path/to/bindhack.so <command>
-	
-	eg:
+LD_PRELOAD=/path/to/bindhack.so <command>
 
-	LD_PRELOAD=/home/rm/bindhack.so telnet example.com
+eg:
 
-	you can also specify the address to use at runtime like so:
+LD_PRELOAD=/home/rm/bindhack.so telnet example.com
 
-	LD_PRELOAD=/home/rm/bindhack.so BIND_SRC=192.168.0.1 telnet example.com
+you can also specify the address to use at runtime like so:
 
-*/
+LD_PRELOAD=/home/rm/bindhack.so BIND_SRC=192.168.0.1 telnet example.com
+
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -34,179 +34,176 @@
 #include <dlfcn.h>
 
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 /* 
    This is the address you want to force everything to use. It can be
    overriden at runtime by specifying the BIND_SRC environment 
    variable.
-*/
-#define SRC_ADDR	"192.168.0.1"
+ */
+#define PROXY_ADDR	"127.0.0.1"
+#define PROXY_PORT	"3128"
 
 /* 
    LIBC_NAME should be the name of the library that contains the real
    bind() and connect() library calls. On Linux this is libc, but on
    other OS's such as Solaris this would be the socket library
-*/
+ */
 #define LIBC_NAME	"libc.so.6" 
 
 #define YES	1
 #define NO	0
 
-int
-bind(int sockfd, const struct sockaddr *my_addr, socklen_t addrlen)
-{
+//#define DEBUG 	1
+/* 
+   Sometimes (alot of times) programs don't bother to call bind() 
+   if they're just making an outgoing connection. To take care of
+   these cases, we need to call bind when they call connect 
+   instead. And of course, then call connect as well...
+ */
 
-	struct sockaddr_in src_addr;
-	void	*libc;
-	int	(*bind_ptr)(int, void *, int);
-	int	ret;
-	int	passthru;
-	char 	*bind_src;
+struct tosend  {
+	const void* buf;
+	size_t len;
+	int flags;
+};
 
-#ifdef DEBUG
-	fprintf(stderr, "bind() override called for addr: %s\n", SRC_ADDR);
-#endif
+struct socket_cache  {
+	int sockfd;
+	struct tosend tosend;
+};
 
-	libc = dlopen(LIBC_NAME, RTLD_LAZY);
-
-	if (!libc)
-	{
-		fprintf(stderr, "Unable to open libc!\n");
-		exit(-1);
-	}
-
-	*(void **) (&bind_ptr) = dlsym(libc, "bind");
-
-	if (!bind_ptr)
-	{
-		fprintf(stderr, "Unable to locate bind function in lib\n");
-		exit(-1);
-	}
-	
-	passthru = YES;	/* By default, we just call regular bind() */
-
-	if (my_addr==NULL)
-	{
-		/* If we get a NULL it's because we're being called
-		   from the connect() hack */
-
-		passthru = NO;
-
-#ifdef DEBUG
-		fprintf(stderr, "bind() Received NULL address.\n");
-#endif
-
-	}
-	else
-	{
-
-		if (my_addr->sa_family == AF_INET)
-		{
-			struct sockaddr_in	myaddr_in;
-
-			/* If this is an INET socket, then we spring to
-			   action! */
-			passthru = NO;
-
-			memcpy(&myaddr_in, my_addr, addrlen);
-
-			src_addr.sin_port = myaddr_in.sin_port;
+struct socket_cache socket_cached[100] ;
+int socket_cached_length=0;
 
 
-		}
-		else
-		{
-			passthru = YES;
-		}
-
-	}
-
-	if (!passthru)
-	{
-
-#ifdef DEBUG
-		fprintf(stderr, "Proceeding with bind hack\n");
-#endif
-
-		src_addr.sin_family = AF_INET;
-
-		bind_src=getenv("BIND_SRC");
-
-		/* If the environment variable BIND_SRC is set, then use
-		   that as the source IP to bind instead of the hard-coded
-		   SRC_ADDR one.
-		*/
-		if (bind_src)
-		{
-			ret = inet_pton(AF_INET, bind_src, &src_addr.sin_addr);
-			if (ret<=0)
-			{
-				/* If the above failed, then try the
-				   built in address. */
-
-				inet_pton(AF_INET, SRC_ADDR, 
-						&src_addr.sin_addr);
-			}
-		}
-		else
-		{
-			inet_pton(AF_INET, SRC_ADDR, &src_addr.sin_addr);
-		}
-
-
-	/* Call real bind function */
-		ret = (int)(*bind_ptr)(sockfd, 
-					(void *)&src_addr, 
-					sizeof(src_addr));
-	}
-	else
-	{
-
-#ifdef DEBUG
-		fprintf(stderr, "Calling real bind unmolested\n");
-#endif
-
-	/* Call real bind function */
-		ret = (int)(*bind_ptr)(sockfd, 
-					(void *)my_addr, 
-					addrlen);
-
-	}
-#ifdef DEBUG
-	fprintf(stderr, "The real bind function returned: %d\n", ret);
-#endif
-
-	/* Clean up */
-	dlclose(libc);
-
-	return ret;
-
+int type_of_sockfd( int sockfd){
+	int type;
+	int length = sizeof( int );
+	getsockopt( sockfd, SOL_SOCKET, SO_TYPE, &type, &length );
+	return type;
 }
 
-/* 
-	Sometimes (alot of times) programs don't bother to call bind() 
-	if they're just making an outgoing connection. To take care of
-	these cases, we need to call bind when they call connect 
-	instead. And of course, then call connect as well...
-*/
+void * origin_from_libc(char* function_name){
 
-int
+	void	*libc;
+	libc = dlopen(LIBC_NAME, RTLD_LAZY);
+	return dlsym(libc, function_name);
+}
+/*
+ssize_t send(int sockfd, const void *buf, size_t len, int flags){
+
+	int type = type_of_sockfd( sockfd);
+	ssize_t (*send_ptr)(int sockfd, const void *buf, size_t len, int flags) = origin_from_libc("send");
+
+	if(type == SOCK_STREAM){
+
+
+		int knowed=0;
+		int i=0;
+		for(i=0; i<socket_cached_length; i++){
+			if(sockfd == socket_cached[i].sockfd){
+				knowed=1;
+				break;
+			}
+		}	
+		if(knowed==0){
+
+			socket_cached[ socket_cached_length].sockfd=sockfd;
+			socket_cached_length++;
+			return 0;
+		}
+	}
+
+	return (int)(*send_ptr)(sockfd, buf, len, flags);
+} 
+
+	ssize_t 
+sendto(int sockfd, const void *buf, size_t len, int flags,
+		const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+	printf("sendro \n");
+	return 0;
+}
+*/
+/*
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+		struct sockaddr *src_addr, socklen_t *addrlen){
+	printf("recv from\n");
+
+	int type = type_of_sockfd( sockfd);
+
+	ssize_t (*recvfrom_ptr)(int sockfd, void *buf, size_t len, int flags,
+			struct sockaddr *src_addr, socklen_t *addrlen) =  origin_from_libc("recvfrom");
+
+	if(type == SOCK_STREAM){
+		printf("recv from on tcp\n");
+
+	}else{
+		printf("recv from on something else");
+	}
+
+	return recvfrom_ptr(sockfd, buf, len, flags, src_addr, addrlen);;
+}
+
+
+ssize_t recv(int sockfd, void *buf, size_t len, int flags){
+	int type = type_of_sockfd( sockfd);
+	if(type == SOCK_STREAM){
+		printf("recv on tcp\n");
+	}
+	printf("recvvv %d \n", len);
+
+}*/
+	int
 connect(int  sockfd, const struct sockaddr *serv_addr, socklen_t addrlen)
 {
 	int	(*connect_ptr)(int, void *, int);
 	void	*libc;
 	int	ret;
 
+	char * proxy_addr = getenv("PROXY_ADDR");
+	char * proxy_port = getenv("PROXY_PORT");
+
+	if(!proxy_addr){
+		proxy_addr = PROXY_ADDR;
+	}
+
+	if(!proxy_port){
+		proxy_port = PROXY_PORT;
+	}
+
+
+	int type;
+	int length = sizeof( int );
+
+	struct sockaddr_in proxy_addr_in ;
+	memcpy(&proxy_addr_in , serv_addr , sizeof(struct sockaddr));
+		
+
+	getsockopt( sockfd, SOL_SOCKET, SO_TYPE, &type, &length );
+
+	struct sockaddr_in* serv_addr_in= (void*) serv_addr; 
+
+	if(serv_addr->sa_family == AF_INET && type == SOCK_STREAM){
+		//printf("socket inet and TCP\n");
+		memcpy(&proxy_addr_in , serv_addr , sizeof(struct sockaddr));
+		inet_pton(AF_INET, proxy_addr, &proxy_addr_in.sin_addr);
+		proxy_addr_in.sin_port = htons( atoi(proxy_port )); 
+		//proxy_addr_in->sin_family = AF_INET;
+	}else {
+		//printf("socket not inet or not tcp\n");
+	}	
+
 #ifdef DEBUG
-	fprintf(stderr, "connect() override called for addr: %s\n", SRC_ADDR);
+	fprintf(stderr, "connect() override called for addr: %s and port %s \n", proxy_addr , proxy_port);
 #endif
 
 	/* Before we call connect, let's call bind() and make sure we're
 	   using our preferred source address.
-	*/
+	 */
 
-	ret = bind(sockfd, NULL, 0); /* Our fake bind doesn't really need
-					those params */
 
 	libc = dlopen(LIBC_NAME, RTLD_LAZY);
 
@@ -226,14 +223,53 @@ connect(int  sockfd, const struct sockaddr *serv_addr, socklen_t addrlen)
 
 
 	/* Call real connect function */
-	ret = (int)(*connect_ptr)(sockfd, (void *)serv_addr, addrlen);
+	ret = (int)(*connect_ptr)(sockfd, (void *) &proxy_addr_in, addrlen);
 
-	/* Clean up */
-	dlclose(libc);
+	//we want send CONNECT methd DIRECTLY
+	if(serv_addr->sa_family == AF_INET && type == SOCK_STREAM){
 
-	return ret;	
+		struct timeval tv;
+		fd_set writefds;
+		fd_set readfds;
 
-}
+		tv.tv_sec = 2;
+		tv.tv_usec = 500000;
+
+		FD_ZERO(&writefds);
+		FD_SET(sockfd, &writefds);
+
+		FD_ZERO(&readfds);
+		FD_SET(sockfd, &readfds);
 
 
+		// don't care about writefds and exceptfds:
+		select(sockfd+1, NULL, &writefds, NULL, &tv);
+		ssize_t (*send_ptr)(int sockfd, const void *buf, size_t len, int flags) = origin_from_libc("send");
+
+		char tosend[1024];
+		char str[INET_ADDRSTRLEN];
+		
+		inet_ntop(AF_INET, &(serv_addr_in->sin_addr), str, INET_ADDRSTRLEN);
+		short pport = ntohs( serv_addr_in->sin_port);
+	
+		int tosendlenght = sprintf(tosend, "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n",  str, pport,str,pport);
+
+				int rr = send_ptr(sockfd, tosend, tosendlenght, 16384);
+				ssize_t (*recv_ptr)(int sockfd, void *buf, size_t len, int flags)= origin_from_libc("recv");
+				select(sockfd+1, NULL, &writefds, NULL, &tv);
+				char data[1024];
+				int datalen = recv_ptr(sockfd,data, 1023, 0);
+
+				}	
+				/* Clean up */
+				dlclose(libc);
+
+				return ret;	
+
+				}
+
+				int write(int fd, const void *buf, size_t count){
+
+				return 0;
+				}
 
