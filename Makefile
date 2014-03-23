@@ -1,2 +1,2 @@
 all:
-	gcc -fPIC -shared -o bindhack.so bindhack.c -lc -ldl
+	gcc -fPIC -shared -o proxyhack.so proxyhack.c -lc -ldl
