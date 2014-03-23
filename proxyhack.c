@@ -63,20 +63,6 @@ LD_PRELOAD=/home/rm/bindhack.so BIND_SRC=192.168.0.1 telnet example.com
    instead. And of course, then call connect as well...
  */
 
-struct tosend  {
-	const void* buf;
-	size_t len;
-	int flags;
-};
-
-struct socket_cache  {
-	int sockfd;
-	struct tosend tosend;
-};
-
-struct socket_cache socket_cached[100] ;
-int socket_cached_length=0;
-
 
 int type_of_sockfd( int sockfd){
 	int type;
@@ -91,71 +77,6 @@ void * origin_from_libc(char* function_name){
 	libc = dlopen(LIBC_NAME, RTLD_LAZY);
 	return dlsym(libc, function_name);
 }
-/*
-ssize_t send(int sockfd, const void *buf, size_t len, int flags){
-
-	int type = type_of_sockfd( sockfd);
-	ssize_t (*send_ptr)(int sockfd, const void *buf, size_t len, int flags) = origin_from_libc("send");
-
-	if(type == SOCK_STREAM){
-
-
-		int knowed=0;
-		int i=0;
-		for(i=0; i<socket_cached_length; i++){
-			if(sockfd == socket_cached[i].sockfd){
-				knowed=1;
-				break;
-			}
-		}	
-		if(knowed==0){
-
-			socket_cached[ socket_cached_length].sockfd=sockfd;
-			socket_cached_length++;
-			return 0;
-		}
-	}
-
-	return (int)(*send_ptr)(sockfd, buf, len, flags);
-} 
-
-	ssize_t 
-sendto(int sockfd, const void *buf, size_t len, int flags,
-		const struct sockaddr *dest_addr, socklen_t addrlen)
-{
-	printf("sendro \n");
-	return 0;
-}
-*/
-/*
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
-		struct sockaddr *src_addr, socklen_t *addrlen){
-	printf("recv from\n");
-
-	int type = type_of_sockfd( sockfd);
-
-	ssize_t (*recvfrom_ptr)(int sockfd, void *buf, size_t len, int flags,
-			struct sockaddr *src_addr, socklen_t *addrlen) =  origin_from_libc("recvfrom");
-
-	if(type == SOCK_STREAM){
-		printf("recv from on tcp\n");
-
-	}else{
-		printf("recv from on something else");
-	}
-
-	return recvfrom_ptr(sockfd, buf, len, flags, src_addr, addrlen);;
-}
-
-
-ssize_t recv(int sockfd, void *buf, size_t len, int flags){
-	int type = type_of_sockfd( sockfd);
-	if(type == SOCK_STREAM){
-		printf("recv on tcp\n");
-	}
-	printf("recvvv %d \n", len);
-
-}*/
 	int
 connect(int  sockfd, const struct sockaddr *serv_addr, socklen_t addrlen)
 {
@@ -254,22 +175,23 @@ connect(int  sockfd, const struct sockaddr *serv_addr, socklen_t addrlen)
 	
 		int tosendlenght = sprintf(tosend, "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n",  str, pport,str,pport);
 
-				int rr = send_ptr(sockfd, tosend, tosendlenght, 16384);
-				ssize_t (*recv_ptr)(int sockfd, void *buf, size_t len, int flags)= origin_from_libc("recv");
-				select(sockfd+1, NULL, &writefds, NULL, &tv);
-				char data[1024];
-				int datalen = recv_ptr(sockfd,data, 1023, 0);
+		int rr = send_ptr(sockfd, tosend, tosendlenght, 16384);
+		ssize_t (*recv_ptr)(int sockfd, void *buf, size_t len, int flags)= origin_from_libc("recv");
+		select(sockfd+1, NULL, &writefds, NULL, &tv);
+		char data[1024];
+		while(recv_ptr(sockfd,data, 1023, 0) ==-1){
+		usleep(200);
+			}
+	}	
+	/* Clean up */
+	dlclose(libc);
 
-				}	
-				/* Clean up */
-				dlclose(libc);
+	return ret;	
 
-				return ret;	
+}
 
-				}
+int write(int fd, const void *buf, size_t count){
 
-				int write(int fd, const void *buf, size_t count){
-
-				return 0;
-				}
+	return 0;
+}
 
